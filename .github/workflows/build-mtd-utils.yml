@@ -43,6 +43,7 @@ jobs:
         run: |
           mkdir -p artifact-x86_64
           cp flash_erase nandwrite artifact-x86_64/
+          strip --strip-unneeded artifact-x86_64/flash_erase artifact-x86_64/nandwrite
           sha256sum artifact-x86_64/* | tee artifact-x86_64/SHA256SUMS
           file artifact-x86_64/flash_erase artifact-x86_64/nandwrite
 
@@ -71,8 +72,8 @@ jobs:
           CC: arm-linux-gnueabi-gcc
           AR: arm-linux-gnueabi-ar
           RANLIB: arm-linux-gnueabi-ranlib
-          CFLAGS: -O2 -marm -mfloat-abi=soft
-          LDFLAGS: -static
+          CFLAGS: -Os -marm -mfloat-abi=soft -ffunction-sections -fdata-sections
+          LDFLAGS: -Wl,--gc-sections
         run: |
           ./autogen.sh
           ./configure \
@@ -94,11 +95,12 @@ jobs:
         run: |
           mkdir -p artifact-arm
           cp flash_erase nandwrite artifact-arm/
+          strip --strip-unneeded artifact-arm/flash_erase artifact-arm/nandwrite
           sha256sum artifact-arm/* | tee artifact-arm/SHA256SUMS
           file artifact-arm/flash_erase artifact-arm/nandwrite
 
       - name: Upload ARM binaries
         uses: actions/upload-artifact@v4
         with:
-          name: mtd-utils-arm32-soft-float-static
+          name: mtd-utils-arm32-soft-float-dynamic-glibc
           path: artifact-arm
