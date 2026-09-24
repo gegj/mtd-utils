@@ -52,7 +52,7 @@ jobs:
           grep -qx 'BR2_SHARED_LIBS=y' .config
           grep -qx 'BR2_arm926t=y' .config
           grep -qx 'BR2_ARM_SOFT_FLOAT=y' .config
-          if ! make -j2 toolchain > "$GITHUB_WORKSPACE/buildroot-toolchain.log" 2>&1; then
+          if ! make -j2 toolchain 2>&1 | tee "$GITHUB_WORKSPACE/buildroot-toolchain.log"; then
             tail -n 250 "$GITHUB_WORKSPACE/buildroot-toolchain.log"
             exit 1
           fi
