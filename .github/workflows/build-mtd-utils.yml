@@ -41,7 +41,6 @@ jobs:
           BR2_ARM_SOFT_FLOAT=y
           BR2_TOOLCHAIN_BUILDROOT=y
           BR2_TOOLCHAIN_BUILDROOT_UCLIBC=y
-          BR2_SHARED_LIBS=y
           BR2_OPTIMIZE_S=y
           BR2_SSP_NONE=y
           EOF
@@ -49,9 +48,10 @@ jobs:
           make olddefconfig
           grep -qx 'BR2_TOOLCHAIN_BUILDROOT=y' .config
           grep -qx 'BR2_TOOLCHAIN_BUILDROOT_UCLIBC=y' .config
-          grep -qx 'BR2_SHARED_LIBS=y' .config
+          ! grep -qx 'BR2_STATIC_LIBS=y' .config
           grep -qx 'BR2_arm926t=y' .config
           grep -qx 'BR2_ARM_SOFT_FLOAT=y' .config
+          grep -E '^(BR2_TOOLCHAIN_BUILDROOT|BR2_TOOLCHAIN_BUILDROOT_UCLIBC|BR2_STATIC_LIBS|BR2_arm926t|BR2_ARM_EABI|BR2_ARM_SOFT_FLOAT)=' .config
           if ! make -j2 toolchain 2>&1 | tee "$GITHUB_WORKSPACE/buildroot-toolchain.log"; then
             tail -n 250 "$GITHUB_WORKSPACE/buildroot-toolchain.log"
             exit 1
