@@ -1,87 +1,66 @@
-name: Build mtd-utils uClibc tools
+name: Build ARM32 uClibc mtd-utils
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - master
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build-arm-uclibc:
-    name: Build 32-bit ARM uClibc tools
+  build:
+    name: ARMv5 EABI uClibc
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      TOOLCHAIN_VERSION: stable-2026.08-1
+      TOOLCHAIN_ARCHIVE: armv5-eabi--uclibc--stable-2026.08-1.tar.xz
+      TOOLCHAIN_SHA256: 2e78440c4b37a9c84d6165f12fd2525e72bf88c32445e1c3400d1e01384c92ce
+      TOOLCHAIN_PREFIX: arm-buildroot-linux-uclibcgnueabi
     steps:
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
-      - name: Install host dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            autoconf automake bc bison build-essential cpio file flex \
-            libtool pkg-config rsync unzip wget xz-utils
+          sudo apt-get install --no-install-recommends -y \
+            autoconf automake build-essential file libtool libtool-bin \
+            pkg-config xz-utils
 
-      - name: Build ARM uClibc toolchain with Buildroot
+      - name: Download and verify ARM uClibc toolchain
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/$TOOLCHAIN_ARCHIVE"
+          toolchain_dir="$RUNNER_TEMP/arm-uclibc-toolchain"
+          url="https://toolchains.bootlin.com/downloads/releases/toolchains/armv5-eabi/tarballs/$TOOLCHAIN_ARCHIVE"
+
+          curl --fail --location --retry 3 --retry-delay 2 "$url" --output "$archive"
+          printf '%s  %s\n' "$TOOLCHAIN_SHA256" "$archive" | sha256sum --check -
+          mkdir -p "$toolchain_dir"
+          tar -xJf "$archive" -C "$toolchain_dir" --strip-components=1
+
+          test -x "$toolchain_dir/bin/$TOOLCHAIN_PREFIX-gcc"
+          test -x "$toolchain_dir/bin/$TOOLCHAIN_PREFIX-strip"
+          test -e "$toolchain_dir/$TOOLCHAIN_PREFIX/sysroot/lib/ld-uClibc.so.0"
+          echo "$toolchain_dir/bin" >> "$GITHUB_PATH"
+
+      - name: Configure and build flash_erase and nandwrite
         env:
-          BUILDROOT_VERSION: 2026.08
+          CC: arm-buildroot-linux-uclibcgnueabi-gcc
+          AR: arm-buildroot-linux-uclibcgnueabi-ar
+          RANLIB: arm-buildroot-linux-uclibcgnueabi-ranlib
+          CFLAGS: -Os -marm -march=armv5te -mfloat-abi=soft -ffunction-sections -fdata-sections
+          LDFLAGS: -Wl,--gc-sections -Wl,--dynamic-linker=/lib/ld-uClibc.so.0
         run: |
           set -euo pipefail
-          wget -q "https://buildroot.org/downloads/buildroot-${BUILDROOT_VERSION}.tar.xz"
-          tar -xf "buildroot-${BUILDROOT_VERSION}.tar.xz"
-          mv "buildroot-${BUILDROOT_VERSION}" buildroot
-          cd buildroot
-
-          cat > .config <<'EOF'
-          BR2_arm=y
-          BR2_arm926t=y
-          BR2_ARM_EABI=y
-          BR2_ARM_SOFT_FLOAT=y
-          BR2_TOOLCHAIN_BUILDROOT=y
-          BR2_TOOLCHAIN_BUILDROOT_UCLIBC=y
-          BR2_OPTIMIZE_S=y
-          BR2_SSP_NONE=y
-          EOF
-
-          make olddefconfig
-          grep -qx 'BR2_TOOLCHAIN_BUILDROOT=y' .config
-          grep -qx 'BR2_TOOLCHAIN_BUILDROOT_UCLIBC=y' .config
-          ! grep -qx 'BR2_STATIC_LIBS=y' .config
-          grep -qx 'BR2_arm926t=y' .config
-          grep -qx 'BR2_ARM_SOFT_FLOAT=y' .config
-          grep -E '^(BR2_TOOLCHAIN_BUILDROOT|BR2_TOOLCHAIN_BUILDROOT_UCLIBC|BR2_STATIC_LIBS|BR2_arm926t|BR2_ARM_EABI|BR2_ARM_SOFT_FLOAT)=' .config
-          if ! make -j2 toolchain 2>&1 | tee "$GITHUB_WORKSPACE/buildroot-toolchain.log"; then
-            tail -n 250 "$GITHUB_WORKSPACE/buildroot-toolchain.log"
-            exit 1
-          fi
-
-          TOOLCHAIN_PREFIX="$(find output/host/bin -maxdepth 1 -type f -name '*-gcc' -printf '%f\n' | sed 's/-gcc$//' | head -n 1)"
-          test -n "$TOOLCHAIN_PREFIX"
-          echo "BR_OUT=$GITHUB_WORKSPACE/buildroot" >> "$GITHUB_ENV"
-          echo "TOOLCHAIN_PREFIX=$TOOLCHAIN_PREFIX" >> "$GITHUB_ENV"
-          echo "Using toolchain: $TOOLCHAIN_PREFIX"
-
-      - name: Upload Buildroot failure log
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: buildroot-failure-log
-          path: buildroot-toolchain.log
-          if-no-files-found: ignore
-
-      - name: Configure and build mtd-utils
-        run: |
-          set -euo pipefail
-          export PATH="$BR_OUT/host/bin:$PATH"
-          export CC="${TOOLCHAIN_PREFIX}-gcc"
-          export AR="${TOOLCHAIN_PREFIX}-ar"
-          export RANLIB="${TOOLCHAIN_PREFIX}-ranlib"
-          export CFLAGS="-Os -marm -mfloat-abi=soft -ffunction-sections -fdata-sections"
-          export LDFLAGS="-Wl,--gc-sections"
-
-          ./autogen.sh
+          ./autogen.sh 2>&1 | tee "$RUNNER_TEMP/mtd-utils-build.log"
           ./configure \
             --host="$TOOLCHAIN_PREFIX" \
             --build="$(gcc -dumpmachine)" \
@@ -95,10 +74,11 @@ jobs:
             --without-lzo \
             --without-zstd \
             --without-selinux \
-            --without-crypto
-          make -j"$(nproc)" flash_erase nandwrite
+            --without-crypto 2>&1 | tee -a "$RUNNER_TEMP/mtd-utils-build.log"
+          make -j"$(nproc)" flash_erase nandwrite 2>&1 \
+            | tee -a "$RUNNER_TEMP/mtd-utils-build.log"
 
-      - name: Package and verify uClibc binaries
+      - name: Strip and verify ARM binaries
         run: |
           set -euo pipefail
           mkdir -p artifact-arm-uclibc
@@ -107,21 +87,29 @@ jobs:
             artifact-arm-uclibc/flash_erase \
             artifact-arm-uclibc/nandwrite
 
-          "${TOOLCHAIN_PREFIX}-readelf" -l artifact-arm-uclibc/flash_erase \
-            | grep -F 'Requesting program interpreter' \
-            | tee artifact-arm-uclibc/INTERPRETER.txt
-          "${TOOLCHAIN_PREFIX}-readelf" -l artifact-arm-uclibc/nandwrite \
-            | grep -F 'Requesting program interpreter' \
-            | tee -a artifact-arm-uclibc/INTERPRETER.txt
+          for binary in artifact-arm-uclibc/flash_erase artifact-arm-uclibc/nandwrite; do
+            "${TOOLCHAIN_PREFIX}-readelf" -h "$binary" | grep -Eq 'Class:[[:space:]]+ELF32'
+            "${TOOLCHAIN_PREFIX}-readelf" -h "$binary" | grep -Eq 'Machine:[[:space:]]+ARM'
+            "${TOOLCHAIN_PREFIX}-readelf" -l "$binary" \
+              | grep -Fq 'Requesting program interpreter: /lib/ld-uClibc.so.0'
+          done
 
           file artifact-arm-uclibc/flash_erase artifact-arm-uclibc/nandwrite
+          printf 'toolchain=Bootlin %s\ntarget=%s\nlibc=uClibc\narch=ARMv5 EABI soft-float\ninterpreter=/lib/ld-uClibc.so.0\n' \
+            "$TOOLCHAIN_VERSION" "$TOOLCHAIN_PREFIX" > artifact-arm-uclibc/BUILD-INFO.txt
           sha256sum artifact-arm-uclibc/flash_erase artifact-arm-uclibc/nandwrite \
             | tee artifact-arm-uclibc/SHA256SUMS
-          printf 'toolchain=%s\nlibc=uClibc\narch=arm32-eabi-soft-float\n' \
-            "$TOOLCHAIN_PREFIX" > artifact-arm-uclibc/BUILD-INFO.txt
 
-      - name: Upload uClibc binaries
-        uses: actions/upload-artifact@v4
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
         with:
-          name: mtd-utils-arm32-soft-float-uclibc
+          name: arm-uclibc-build-log
+          path: ${{ runner.temp }}/mtd-utils-build.log
+          if-no-files-found: ignore
+
+      - name: Upload ARM uClibc binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: mtd-utils-arm32-uclibc-armv5te
           path: artifact-arm-uclibc
