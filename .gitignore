@@ -6,6 +6,9 @@
 # Normal rules
 #
 .*
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
 *.gdb
 *.o
 *.a
