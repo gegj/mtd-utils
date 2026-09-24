@@ -39,6 +39,7 @@ jobs:
           BR2_arm926t=y
           BR2_ARM_EABI=y
           BR2_ARM_SOFT_FLOAT=y
+          BR2_TOOLCHAIN_BUILDROOT=y
           BR2_TOOLCHAIN_BUILDROOT_UCLIBC=y
           BR2_SHARED_LIBS=y
           BR2_OPTIMIZE_S=y
@@ -46,13 +47,29 @@ jobs:
           EOF
 
           make olddefconfig
-          make -j"$(nproc)" toolchain
+          grep -qx 'BR2_TOOLCHAIN_BUILDROOT=y' .config
+          grep -qx 'BR2_TOOLCHAIN_BUILDROOT_UCLIBC=y' .config
+          grep -qx 'BR2_SHARED_LIBS=y' .config
+          grep -qx 'BR2_arm926t=y' .config
+          grep -qx 'BR2_ARM_SOFT_FLOAT=y' .config
+          if ! make -j2 toolchain > "$GITHUB_WORKSPACE/buildroot-toolchain.log" 2>&1; then
+            tail -n 250 "$GITHUB_WORKSPACE/buildroot-toolchain.log"
+            exit 1
+          fi
 
           TOOLCHAIN_PREFIX="$(find output/host/bin -maxdepth 1 -type f -name '*-gcc' -printf '%f\n' | sed 's/-gcc$//' | head -n 1)"
           test -n "$TOOLCHAIN_PREFIX"
           echo "BR_OUT=$GITHUB_WORKSPACE/buildroot" >> "$GITHUB_ENV"
           echo "TOOLCHAIN_PREFIX=$TOOLCHAIN_PREFIX" >> "$GITHUB_ENV"
           echo "Using toolchain: $TOOLCHAIN_PREFIX"
+
+      - name: Upload Buildroot failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildroot-failure-log
+          path: buildroot-toolchain.log
+          if-no-files-found: ignore
 
       - name: Configure and build mtd-utils
         run: |
