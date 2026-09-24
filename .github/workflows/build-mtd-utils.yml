@@ -1,4 +1,4 @@
-name: Build mtd-utils tools
+name: Build mtd-utils uClibc tools
 
 on:
   workflow_dispatch:
@@ -10,31 +10,64 @@ permissions:
   contents: read
 
 jobs:
-  build-arm:
-    name: Build 32-bit ARM soft-float tools
+  build-arm-uclibc:
+    name: Build 32-bit ARM uClibc tools
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Install ARM cross compiler
+      - name: Install host dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            autoconf automake build-essential gcc-arm-linux-gnueabi \
-            binutils-arm-linux-gnueabi libtool pkg-config
+            autoconf automake bc bison build-essential cpio file flex \
+            libtool pkg-config rsync unzip wget xz-utils
 
-      - name: Configure and build
+      - name: Build ARM uClibc toolchain with Buildroot
         env:
-          CC: arm-linux-gnueabi-gcc
-          AR: arm-linux-gnueabi-ar
-          RANLIB: arm-linux-gnueabi-ranlib
-          CFLAGS: -Os -marm -mfloat-abi=soft -ffunction-sections -fdata-sections
-          LDFLAGS: -Wl,--gc-sections
+          BUILDROOT_VERSION: 2026.08
         run: |
+          set -euo pipefail
+          wget -q "https://buildroot.org/downloads/buildroot-${BUILDROOT_VERSION}.tar.xz"
+          tar -xf "buildroot-${BUILDROOT_VERSION}.tar.xz"
+          mv "buildroot-${BUILDROOT_VERSION}" buildroot
+          cd buildroot
+
+          cat > .config <<'EOF'
+          BR2_arm=y
+          BR2_arm926t=y
+          BR2_ARM_EABI=y
+          BR2_ARM_SOFT_FLOAT=y
+          BR2_TOOLCHAIN_BUILDROOT_UCLIBC=y
+          BR2_SHARED_LIBS=y
+          BR2_OPTIMIZE_S=y
+          BR2_SSP_NONE=y
+          EOF
+
+          make olddefconfig
+          make -j"$(nproc)" toolchain
+
+          TOOLCHAIN_PREFIX="$(find output/host/bin -maxdepth 1 -type f -name '*-gcc' -printf '%f\n' | sed 's/-gcc$//' | head -n 1)"
+          test -n "$TOOLCHAIN_PREFIX"
+          echo "BR_OUT=$GITHUB_WORKSPACE/buildroot" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_PREFIX=$TOOLCHAIN_PREFIX" >> "$GITHUB_ENV"
+          echo "Using toolchain: $TOOLCHAIN_PREFIX"
+
+      - name: Configure and build mtd-utils
+        run: |
+          set -euo pipefail
+          export PATH="$BR_OUT/host/bin:$PATH"
+          export CC="${TOOLCHAIN_PREFIX}-gcc"
+          export AR="${TOOLCHAIN_PREFIX}-ar"
+          export RANLIB="${TOOLCHAIN_PREFIX}-ranlib"
+          export CFLAGS="-Os -marm -mfloat-abi=soft -ffunction-sections -fdata-sections"
+          export LDFLAGS="-Wl,--gc-sections"
+
           ./autogen.sh
           ./configure \
-            --host=arm-linux-gnueabi \
+            --host="$TOOLCHAIN_PREFIX" \
+            --build="$(gcc -dumpmachine)" \
             --without-tests \
             --disable-ubihealthd \
             --without-lsmtd \
@@ -48,16 +81,30 @@ jobs:
             --without-crypto
           make -j"$(nproc)" flash_erase nandwrite
 
-      - name: Package ARM binaries
+      - name: Package and verify uClibc binaries
         run: |
-          mkdir -p artifact-arm
-          cp flash_erase nandwrite artifact-arm/
-          arm-linux-gnueabi-strip --strip-unneeded artifact-arm/flash_erase artifact-arm/nandwrite
-          sha256sum artifact-arm/* | tee artifact-arm/SHA256SUMS
-          file artifact-arm/flash_erase artifact-arm/nandwrite
+          set -euo pipefail
+          mkdir -p artifact-arm-uclibc
+          cp flash_erase nandwrite artifact-arm-uclibc/
+          "${TOOLCHAIN_PREFIX}-strip" --strip-unneeded \
+            artifact-arm-uclibc/flash_erase \
+            artifact-arm-uclibc/nandwrite
 
-      - name: Upload ARM binaries
+          "${TOOLCHAIN_PREFIX}-readelf" -l artifact-arm-uclibc/flash_erase \
+            | grep -F 'Requesting program interpreter' \
+            | tee artifact-arm-uclibc/INTERPRETER.txt
+          "${TOOLCHAIN_PREFIX}-readelf" -l artifact-arm-uclibc/nandwrite \
+            | grep -F 'Requesting program interpreter' \
+            | tee -a artifact-arm-uclibc/INTERPRETER.txt
+
+          file artifact-arm-uclibc/flash_erase artifact-arm-uclibc/nandwrite
+          sha256sum artifact-arm-uclibc/flash_erase artifact-arm-uclibc/nandwrite \
+            | tee artifact-arm-uclibc/SHA256SUMS
+          printf 'toolchain=%s\nlibc=uClibc\narch=arm32-eabi-soft-float\n' \
+            "$TOOLCHAIN_PREFIX" > artifact-arm-uclibc/BUILD-INFO.txt
+
+      - name: Upload uClibc binaries
         uses: actions/upload-artifact@v4
         with:
-          name: mtd-utils-arm32-soft-float-dynamic-glibc
-          path: artifact-arm
+          name: mtd-utils-arm32-soft-float-uclibc
+          path: artifact-arm-uclibc
