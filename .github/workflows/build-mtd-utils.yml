@@ -15,9 +15,15 @@ concurrency:
 
 jobs:
   build:
-    name: ARMv5 EABI uClibc
+    name: ARMv5 EABI uClibc mtd-utils ${{ matrix.version }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - 2.3.1
+          - 1.5.2
     env:
       TOOLCHAIN_VERSION: stable-2026.08-1
       TOOLCHAIN_ARCHIVE: armv5-eabi--uclibc--stable-2026.08-1.tar.xz
@@ -26,6 +32,8 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@v7
+        with:
+          ref: v${{ matrix.version }}
 
       - name: Install build dependencies
         run: |
@@ -60,7 +68,7 @@ jobs:
           LDFLAGS: -Wl,--gc-sections -Wl,--dynamic-linker=/lib/ld-uClibc.so.0
         run: |
           set -euo pipefail
-          ./autogen.sh 2>&1 | tee "$RUNNER_TEMP/mtd-utils-build.log"
+          ./autogen.sh 2>&1 | tee "$RUNNER_TEMP/mtd-utils-build-${{ matrix.version }}.log"
           ./configure \
             --host="$TOOLCHAIN_PREFIX" \
             --build="$(gcc -dumpmachine)" \
@@ -74,9 +82,9 @@ jobs:
             --without-lzo \
             --without-zstd \
             --without-selinux \
-            --without-crypto 2>&1 | tee -a "$RUNNER_TEMP/mtd-utils-build.log"
+            --without-crypto 2>&1 | tee -a "$RUNNER_TEMP/mtd-utils-build-${{ matrix.version }}.log"
           make -j"$(nproc)" flash_erase nandwrite 2>&1 \
-            | tee -a "$RUNNER_TEMP/mtd-utils-build.log"
+            | tee -a "$RUNNER_TEMP/mtd-utils-build-${{ matrix.version }}.log"
 
       - name: Strip and verify ARM binaries
         run: |
@@ -95,8 +103,8 @@ jobs:
           done
 
           file artifact-arm-uclibc/flash_erase artifact-arm-uclibc/nandwrite
-          printf 'toolchain=Bootlin %s\ntarget=%s\nlibc=uClibc\narch=ARMv5 EABI soft-float\ninterpreter=/lib/ld-uClibc.so.0\n' \
-            "$TOOLCHAIN_VERSION" "$TOOLCHAIN_PREFIX" > artifact-arm-uclibc/BUILD-INFO.txt
+          printf 'mtd-utils=%s\ntoolchain=Bootlin %s\ntarget=%s\nlibc=uClibc\narch=ARMv5 EABI soft-float\ninterpreter=/lib/ld-uClibc.so.0\n' \
+            "${{ matrix.version }}" "$TOOLCHAIN_VERSION" "$TOOLCHAIN_PREFIX" > artifact-arm-uclibc/BUILD-INFO.txt
           sha256sum artifact-arm-uclibc/flash_erase artifact-arm-uclibc/nandwrite \
             | tee artifact-arm-uclibc/SHA256SUMS
 
@@ -104,12 +112,12 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: arm-uclibc-build-log
-          path: ${{ runner.temp }}/mtd-utils-build.log
+          name: mtd-utils-${{ matrix.version }}-arm-uclibc-build-log
+          path: ${{ runner.temp }}/mtd-utils-build-${{ matrix.version }}.log
           if-no-files-found: ignore
 
       - name: Upload ARM uClibc binaries
         uses: actions/upload-artifact@v7
         with:
-          name: mtd-utils-arm32-uclibc-armv5te
+          name: mtd-utils-${{ matrix.version }}-arm32-uclibc-armv5te
           path: artifact-arm-uclibc
