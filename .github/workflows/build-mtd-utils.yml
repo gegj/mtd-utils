@@ -24,6 +24,8 @@ jobs:
         version:
           - 2.3.1
           - 1.5.2
+        repository:
+          - lgirdk/mtd-utils
     env:
       TOOLCHAIN_VERSION: stable-2026.08-1
       TOOLCHAIN_ARCHIVE: armv5-eabi--uclibc--stable-2026.08-1.tar.xz
@@ -33,7 +35,9 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v7
         with:
+          repository: ${{ matrix.repository }}
           ref: v${{ matrix.version }}
+          fetch-depth: 0
 
       - name: Install build dependencies
         run: |
