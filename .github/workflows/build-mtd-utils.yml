@@ -49,7 +49,8 @@ jobs:
             sha256: ''
             dynamic_linker: ''
             interp_re: '^/lib/ld-musl-.*\.so\.1$'
-            needed_re: '^libc\.so$'
+            # musl 自己就是 libc+loader，设备上必然有它的 loader，允许出现在 NEEDED 里
+            needed_re: '^(libc\.so|ld-musl-.*\.so\.1)$'
             uclibc_compat: false
           - libc: glibc
             arch: armv5te-softfloat
@@ -57,7 +58,9 @@ jobs:
             sha256: ''
             dynamic_linker: ''
             interp_re: '^/lib/ld-linux.*\.so\.[0-9]+$'
-            needed_re: '^libc\.so\.6$'
+            # glibc 的 libc.so 链接脚本本身带 AS_NEEDED(ld-linux.so.3)，产物 NEEDED 里
+            # 正常就会带 loader —— 与 uClibc-ng 那条"设备根本没有的 ld-uClibc.so.1"性质不同
+            needed_re: '^(libc\.so\.6|ld-linux.*\.so\.[0-9]+)$'
             uclibc_compat: false
 
     env:
