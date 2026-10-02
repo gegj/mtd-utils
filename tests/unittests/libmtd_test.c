@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #include <setjmp.h>
@@ -197,6 +198,22 @@ static void test_mtd_erase_multi(void **state)
 	r = mtd_erase_multi(lib, &mtd, 4, eb, blocks);
 	assert_int_equal(r, 0);
 
+	/* An unknown old kernel must fall back only on ENOTTY. */
+	lib->offs64_ioctls = OFFS64_IOCTLS_UNKNOWN;
+	errno = ENOTTY;
+	expect_ioctl(MEMERASE64, -1, &ei64);
+	expect_ioctl(MEMERASE, 0, &ei);
+	r = mtd_erase_multi(lib, &mtd, 4, eb, blocks);
+	assert_int_equal(r, 0);
+	assert_int_equal(lib->offs64_ioctls, OFFS64_IOCTLS_NOT_SUPPORTED);
+
+	lib->offs64_ioctls = OFFS64_IOCTLS_UNKNOWN;
+	errno = EIO;
+	expect_ioctl(MEMERASE64, -1, &ei64);
+	r = mtd_erase_multi(lib, &mtd, 4, eb, blocks);
+	assert_int_equal(r, -1);
+	assert_int_equal(lib->offs64_ioctls, OFFS64_IOCTLS_UNKNOWN);
+
 	libmtd_close(lib);
 	(void) state;
 }
@@ -318,6 +335,28 @@ static void test_mtd_write_withoob(void **state)
 	expect_ioctl(MEMWRITE, 0, &req);
 	int r = mtd_write(lib, &mtd, mock_fd, eb, offs, buf, len, oob_data, oob_len, mode);
 	assert_int_equal(r, 0);
+
+	/* Unsupported MEMWRITE falls back; an actual I/O error must not. */
+	struct mtd_oob_buf64 oob64;
+	memset(&oob64, 0, sizeof(oob64));
+	oob64.start = seek;
+	oob64.length = oob_len;
+	oob64.usr_ptr = (uint64_t)(unsigned long)oob_data;
+	mtd.oob_size = 128;
+	mtd.min_io_size = 64;
+	lib->offs64_ioctls = OFFS64_IOCTLS_SUPPORTED;
+	errno = ENOTTY;
+	expect_ioctl(MEMWRITE, -1, &req);
+	expect_ioctl(MEMWRITEOOB64, 0, &oob64);
+	expect_lseek(seek, SEEK_SET, seek);
+	expect_write(buf, len, len);
+	r = mtd_write(lib, &mtd, mock_fd, eb, offs, buf, len, oob_data, oob_len, mode);
+	assert_int_equal(r, 0);
+
+	errno = EIO;
+	expect_ioctl(MEMWRITE, -1, &req);
+	r = mtd_write(lib, &mtd, mock_fd, eb, offs, buf, len, oob_data, oob_len, mode);
+	assert_int_equal(r, -1);
 
 	libmtd_close(lib);
 	(void) state;

@@ -46,6 +46,7 @@ TEST_EXTENSIONS = .sh
 SH_LOG_COMPILER = $(SHELL)
 AM_TESTS_ENVIRONMENT = TESTBINDIR='$(abs_top_builddir)'; export TESTBINDIR;
 EXTRA_DIST = COPYING CHANGELOG.md README.txt
+EXTRA_DIST += tests/unittests/mtd_tools_mock.c tests/unittests/mtd_tools_test.py
 
 include lib/Makemodule.am
 include ubi-utils/Makemodule.am

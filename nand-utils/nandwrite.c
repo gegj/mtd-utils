@@ -46,7 +46,7 @@ static void display_help(int status)
 {
 	fprintf(status == EXIT_SUCCESS ? stdout : stderr,
 "Usage: nandwrite [OPTION] MTD_DEVICE [INPUTFILE|-]\n"
-"Writes to the specified MTD device.\n"
+"Writes to the specified NAND MTD device.\n"
 "\n"
 "  -a, --autoplace         Use auto OOB layout\n"
 "  -k, --skip-all-ffs      Skip pages that contain only 0xff bytes\n"
@@ -295,6 +295,11 @@ int main(int argc, char * const argv[])
 	/* Fill in MTD device capability structure */
 	if (mtd_get_dev_info(mtd_desc, mtd_device, &mtd) < 0)
 		errmsg_die("mtd_get_dev_info failed");
+	if (mtd.type != MTD_NANDFLASH && mtd.type != MTD_MLCNANDFLASH) {
+		close(fd);
+		libmtd_close(mtd_desc);
+		errmsg_die("%s is not a NAND device", mtd_device);
+	}
 
 	/*
 	 * Pretend erasesize is specified number of blocks - to match jffs2

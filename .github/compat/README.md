@@ -1,7 +1,8 @@
 # 交叉编译兼容层（.github/compat）
 
-这套东西只为一件事：**用现代的 Bootlin uClibc-ng 工具链，编出能在"经典 uClibc 0.9.33.x"
-设备上直接跑的 nandwrite / flash_erase**，而且必须是动态链接（不能静态：部分设备 `/tmp` 极小，
+这套构建以 **ARM 小端 EABI5 soft-float、uClibc 0.9.33.2** 为兼容基线，
+使用现代 Bootlin uClibc-ng 工具链编译 nandwrite / flash_erase。其它设备需要分别核验，
+不能仅凭 loader 名称保证兼容。产物使用动态 libc（部分设备 `/tmp` 极小，
 静态要 ~1MB，动态只要 35~45KB）。
 
 ## 当年踩的坑（三条，缺一条就"装得上、跑不起来"）
@@ -20,7 +21,7 @@
 
 `verify-arm-mtd-utils.py` 在每个变体编译完成后运行，检查：
 
-1. ELF32 / ARM；
+1. ELF32 / ARM、小端、EABI5、ARMv5TE attributes；拒绝 hard-float、VFP 参数及 FP/SIMD 指令集属性；
 2. `PT_INTERP` 匹配目标设备 loader（uClibc 变体必须是 `/lib/ld-uClibc.so.0`）；
 3. 每条 `DT_NEEDED` 都匹配期望的 libc（uClibc 变体绝不允许出现 `ld-uClibc.so.1`）；
 4. 体积 < 200KB（一旦误编成静态会大一个数量级，立刻失败）；
@@ -55,3 +56,61 @@ python3 .github/compat/verify-arm-mtd-utils.py \
   --symbol-gate .github/compat/uclibc-0.9.33.2-dynsyms.txt \
   --forbid-symbols gnu_dev_major gnu_dev_minor __stack_chk_guard
 ```
+
+## Build environment and artifacts
+
+Use Linux with autoconf, automake, build-essential, libtool, pkg-config,
+python3 and xz-utils. Download the workflow's pinned Bootlin
+`armv5-eabi--uclibc--stable-2026.08-1.tar.xz` and verify SHA256
+`2e78440c4b37a9c84d6165f12fd2525e72bf88c32445e1c3400d1e01384c92ce`.
+Put its `bin` directory on PATH before running the commands above. Set
+`AR=arm-buildroot-linux-uclibcgnueabi-ar` and
+`RANLIB=arm-buildroot-linux-uclibcgnueabi-ranlib`. The actual prefix must match
+the downloaded compiler. The internal libmtd archive is linked into the
+tools; libc remains dynamic.
+
+After building, copy the two tools into an artifact directory, strip those
+copies with the cross toolchain's `strip --strip-unneeded`, run the gate on
+the stripped copies, and generate `sha256sum flash_erase nandwrite` there.
+CI performs these steps and includes `STATIC-VERIFICATION.txt` and build
+metadata. Its native regression job must pass before the ARM build starts.
+
+## Native regression tests
+
+Run in a separate native checkout/build, without cross-compilation flags:
+
+```bash
+./autogen.sh
+./configure --enable-unit-tests --without-tests --disable-ubihealthd \
+  --without-lsmtd --without-jffs --without-ubifs --without-zlib \
+  --without-xattr --without-lzo --without-zstd --without-selinux --without-crypto
+make -j"$(nproc)" libmtd.a mtdlib_test
+./mtdlib_test
+python3 tests/unittests/mtd_tools_test.py
+python3 .github/compat/verify-arm-mtd-utils.py --self-test
+```
+
+Install `libcmocka-dev` for the libmtd unit tests. The CLI tests execute real
+tool code against a file-backed MTD double: NOR/NAND erase, bad-block skip,
+unlock/erase/cleanmarker failures, bulk fallback, NAND write/readback,
+padding, write failures, NOR rejection and insufficient space. The libmtd
+tests cover unsupported ioctl fallback versus actual I/O errors. Neither
+test suite models physical ECC, hardware timing or power loss.
+
+## Non-erasing ADB verification
+
+Only use newly built artifacts after native regression tests pass:
+
+```bash
+python3 .github/compat/verify-adb-mtd-utils.py \
+  --serial 1234567890ABCDEF --binaries artifact-arm-uclibc \
+  --report adb-verification.json
+```
+
+The script creates a unique temporary device directory, verifies help and
+version output (not exit status alone), tests missing-device failures, and
+checks nandwrite's rejection of confirmed NOR mtd0 with an empty input.
+It removes its uploaded files afterward. It never invokes flash_erase on
+a device. Physical NOR erase, NAND write and raw/OOB remain unverified.
+Static gate success proves only the checked ELF properties and symbol
+names; it does not establish libc semantic or kernel/flash compatibility.

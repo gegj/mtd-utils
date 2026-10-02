@@ -1,10 +1,7 @@
 name: Build ARM32 mtd-utils (nandwrite + flash_erase)
 
-# 提交到 master / 发起 PR / 手动触发都会编译，产物是三个"动态、小体积"的变体：
-#   uclibc -> 经典 uClibc 0.9.33.x 设备（随身 WiFi 常见）与 uClibc-ng 设备
-#   musl   -> OpenWrt/musl 一类设备
-#   glibc  -> glibc 设备
-# 每个变体只有 35~45KB（不能静态链接：部分设备 /tmp 空间极小，静态要 ~1MB）。
+# 提交到 master / 发起 PR / 手动触发都会编译一个 ARM32 uClibc 动态变体。
+# 基线是小端 EABI5 ARMv5TE soft-float / uClibc 0.9.33.2，真机另行验证。
 #
 # uClibc 变体做了三个必需的兼容处理（详见 .github/compat/README.md）：
 #   1) -fno-stack-protector                 去掉 __stack_chk_guard 引用
@@ -27,47 +24,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  native-tests:
+    name: Native MTD regression tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y autoconf automake build-essential libtool pkg-config libcmocka-dev python3
+      - name: Configure and test
+        run: |
+          set -euo pipefail
+          python3 .github/compat/verify-arm-mtd-utils.py --self-test
+          ./autogen.sh
+          ./configure --enable-unit-tests --without-tests --disable-ubihealthd \
+            --without-lsmtd --without-jffs --without-ubifs --without-zlib \
+            --without-xattr --without-lzo --without-zstd --without-selinux --without-crypto
+          make -j"$(nproc)" libmtd.a mtdlib_test
+          ./mtdlib_test
+          python3 tests/unittests/mtd_tools_test.py
+
   build:
-    name: ${{ matrix.libc }} / ${{ matrix.arch }}
+    needs: native-tests
+    name: uclibc / armv5te-softfloat
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - libc: uclibc
-            arch: armv5te-softfloat
-            archive: armv5-eabi--uclibc--stable-2026.08-1.tar.xz
-            sha256: 2e78440c4b37a9c84d6165f12fd2525e72bf88c32445e1c3400d1e01384c92ce
-            dynamic_linker: /lib/ld-uClibc.so.0
-            interp_re: '^/lib/ld-uClibc\.so\.0$'
-            needed_re: '^libc\.so\.0$'
-            uclibc_compat: true
-          - libc: musl
-            arch: armv5te-softfloat
-            archive: armv5-eabi--musl--stable-2026.08-1.tar.xz
-            sha256: ''
-            dynamic_linker: ''
-            interp_re: '^/lib/ld-musl-.*\.so\.1$'
-            # musl 自己就是 libc+loader，设备上必然有它的 loader，允许出现在 NEEDED 里
-            needed_re: '^(libc\.so|ld-musl-.*\.so\.1)$'
-            uclibc_compat: false
-          - libc: glibc
-            arch: armv5te-softfloat
-            archive: armv5-eabi--glibc--stable-2026.08-1.tar.xz
-            sha256: ''
-            dynamic_linker: ''
-            interp_re: '^/lib/ld-linux.*\.so\.[0-9]+$'
-            # glibc 的 libc.so 链接脚本本身带 AS_NEEDED(ld-linux.so.3)，产物 NEEDED 里
-            # 正常就会带 loader —— 与 uClibc-ng 那条"设备根本没有的 ld-uClibc.so.1"性质不同
-            needed_re: '^(libc\.so\.6|ld-linux.*\.so\.[0-9]+)$'
-            uclibc_compat: false
-
     env:
+      TOOLCHAIN_ARCHIVE: armv5-eabi--uclibc--stable-2026.08-1.tar.xz
+      TOOLCHAIN_SHA256: 2e78440c4b37a9c84d6165f12fd2525e72bf88c32445e1c3400d1e01384c92ce
+      DYNAMIC_LINKER: /lib/ld-uClibc.so.0
+      ARTIFACT_DIR: ${{ github.workspace }}/artifact-arm-uclibc
+
       TOOLCHAIN_DIR: ${{ github.workspace }}/.toolchain
       COMPAT_DIR: ${{ github.workspace }}/.github/compat
       COMPAT_LIB_DIR: ${{ github.workspace }}/.compat-lib
-      ARTIFACT_DIR: ${{ github.workspace }}/artifact-arm-${{ matrix.libc }}
 
     steps:
       - name: Checkout source
@@ -85,19 +77,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.TOOLCHAIN_DIR }}
-          key: bootlin-armv5-eabi-${{ matrix.archive }}
+          key: bootlin-armv5-eabi-${{ env.TOOLCHAIN_ARCHIVE }}
 
       - name: Download Bootlin toolchain
         if: steps.toolchain_cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          url="https://toolchains.bootlin.com/downloads/releases/toolchains/armv5-eabi/tarballs/${{ matrix.archive }}"
+          url="https://toolchains.bootlin.com/downloads/releases/toolchains/armv5-eabi/tarballs/${{ env.TOOLCHAIN_ARCHIVE }}"
           curl --fail --location --retry 3 --retry-delay 2 "$url" --output "$RUNNER_TEMP/toolchain.tar.xz"
-          if [ -n "${{ matrix.sha256 }}" ]; then
-            printf '%s  %s\n' "${{ matrix.sha256 }}" "$RUNNER_TEMP/toolchain.tar.xz" | sha256sum --check -
-          else
-            echo "::warning::matrix.sha256 为空，未校验工具链哈希（可从 .../tarballs/${{ matrix.archive }}.sha256 取到后填上）"
-          fi
+          printf '%s  %s\n' "${{ env.TOOLCHAIN_SHA256 }}" "$RUNNER_TEMP/toolchain.tar.xz" | sha256sum --check -
           rm -rf "$TOOLCHAIN_DIR"
           mkdir -p "$TOOLCHAIN_DIR"
           tar -xJf "$RUNNER_TEMP/toolchain.tar.xz" -C "$TOOLCHAIN_DIR" --strip-components=1
@@ -114,7 +102,6 @@ jobs:
           echo "release=$(grep -oP 'm4_define\(\[RELEASE\], \K[0-9.]+' configure.ac)" >> "$GITHUB_OUTPUT"
 
       - name: Prepare uClibc compatibility layer
-        if: matrix.uclibc_compat
         run: |
           set -euo pipefail
           # 让 -lc 解析到我们自己的脚本：只链共享 libc.so.0。
@@ -135,14 +122,9 @@ jobs:
           cflags="-Os -marm -march=armv5te -mfloat-abi=soft -ffunction-sections -fdata-sections"
           cppflags=""
           ldflags="-Wl,--gc-sections"
-          if [ -n "${{ matrix.dynamic_linker }}" ]; then
-            ldflags="$ldflags -Wl,--dynamic-linker=${{ matrix.dynamic_linker }}"
-          fi
-          if [ "${{ matrix.uclibc_compat }}" = "true" ]; then
-            cflags="$cflags -fno-stack-protector"
-            cppflags="-I$COMPAT_DIR"
-            ldflags="$ldflags -L$COMPAT_LIB_DIR"
-          fi
+          cflags="$cflags -fno-stack-protector"
+          cppflags="-I$COMPAT_DIR"
+          ldflags="$ldflags -Wl,--dynamic-linker=$DYNAMIC_LINKER -L$COMPAT_LIB_DIR"
           {
             echo "CC=${{ steps.tc.outputs.prefix }}-gcc"
             echo "AR=${{ steps.tc.outputs.prefix }}-ar"
@@ -158,7 +140,7 @@ jobs:
       - name: Configure and build nandwrite + flash_erase
         run: |
           set -euo pipefail
-          log="$RUNNER_TEMP/build-${{ matrix.libc }}.log"
+          log="$RUNNER_TEMP/build-uclibc.log"
           ./autogen.sh 2>&1 | tee "$log"
           ./configure \
             --host="${{ steps.tc.outputs.prefix }}" \
@@ -197,14 +179,12 @@ jobs:
         run: |
           set -euo pipefail
           args=(--binaries "$ARTIFACT_DIR/flash_erase" "$ARTIFACT_DIR/nandwrite"
-                --interp-re '${{ matrix.interp_re }}'
-                --needed-re '${{ matrix.needed_re }}'
+                --interp-re '^/lib/ld-uClibc\.so\.0$'
+                --needed-re '^libc\.so\.0$'
                 --max-size 204800)
-          if [ "${{ matrix.uclibc_compat }}" = "true" ]; then
-            args+=(--symbol-gate "$COMPAT_DIR/uclibc-0.9.33.2-dynsyms.txt"
-                   --forbid-symbols gnu_dev_major gnu_dev_minor __stack_chk_guard)
-          fi
-          python3 "$COMPAT_DIR/verify-arm-mtd-utils.py" "${args[@]}"
+          args+=(--symbol-gate "$COMPAT_DIR/uclibc-0.9.33.2-dynsyms.txt"
+                 --forbid-symbols gnu_dev_major gnu_dev_minor __stack_chk_guard)
+          python3 "$COMPAT_DIR/verify-arm-mtd-utils.py" "${args[@]}" | tee "$ARTIFACT_DIR/STATIC-VERIFICATION.txt"
 
       - name: Write BUILD-INFO / SHA256SUMS / 选型说明
         run: |
@@ -212,27 +192,27 @@ jobs:
           cat > "$ARTIFACT_DIR/BUILD-INFO.txt" <<EOF
           mtd-utils=${{ steps.tc.outputs.release }}
           source=${{ github.repository }}@${{ github.sha }}
-          toolchain=Bootlin ${{ matrix.archive }}
+          toolchain=Bootlin ${{ env.TOOLCHAIN_ARCHIVE }}
           target=${{ steps.tc.outputs.prefix }}
-          libc=${{ matrix.libc }}
-          arch=${{ matrix.arch }}
-          dynamic_linker=${{ matrix.dynamic_linker }}
-          uclibc_compat=${{ matrix.uclibc_compat }}
+          libc=uclibc-0.9.33-compatible
+          arch=armv5te-softfloat
+          dynamic_linker=$DYNAMIC_LINKER
+          uclibc_compat=true
           build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           EOF
           ( cd "$ARTIFACT_DIR" && sha256sum flash_erase nandwrite | tee SHA256SUMS )
           cat > "$ARTIFACT_DIR/HOW-TO-PICK.txt" <<'EOF'
           设备上怎么挑这一份（先看设备 /lib 里有哪些 loader）：
 
-            /lib/ld-uClibc.so.0       -> 用 uclibc 变体（经典 uClibc 0.9.33.x 与 uClibc-ng 都适用）
-            /lib/ld-musl-*.so.1       -> 用 musl 变体
-            /lib/ld-linux*.so.*       -> 用 glibc 变体
+            /lib/ld-uClibc.so.0       -> 候选 uClibc 变体，仍需核对 libc 符号和设备 ABI
 
           其它提示：
-            - 三个变体都是 armv5te + soft-float，可向下兼容跑在 armv6/armv7 设备上；
-            - 推送后先跑 `/tmp/nandwrite -V`，能打印 `nandwrite (mtd-utils) <版本>` 才算可用
+            - 此变体是小端 ARMv5TE EABI5 soft-float；ARMv6/ARMv7 仍需匹配 libc 和内核接口；
+            - 推送后先跑 `/tmp/nandwrite -V`，输出正确仅证明版本路径可以加载运行
               （uClibc 的 loader 在加载失败时可能仍然返回退出码 0，不能只看退出码）；
-            - 设备没有 dd 时回读校验要用 `head -c`，WiFitool 0.73.7 起会自动探测。
+            - flash_erase 支持 NAND/NOR；nandwrite 仅写 NAND，拒绝 NOR。
+            - 文件模型和 ioctl 单元测试不等于物理闪存验证。
+            - 本构建没有执行真机 NOR 擦除、NAND 写入或 raw/OOB 验收。
           EOF
           cat "$ARTIFACT_DIR/BUILD-INFO.txt"
 
@@ -240,28 +220,12 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: mtd-utils-${{ matrix.libc }}-build-log
-          path: ${{ runner.temp }}/build-${{ matrix.libc }}.log
+          name: mtd-utils-uclibc-build-log
+          path: ${{ runner.temp }}/build-uclibc.log
           if-no-files-found: ignore
 
       - name: Upload binaries
         uses: actions/upload-artifact@v7
         with:
-          name: mtd-utils-${{ steps.tc.outputs.release }}-arm32-${{ matrix.libc }}-${{ matrix.arch }}
+          name: mtd-utils-${{ steps.tc.outputs.release }}-arm32-uclibc-armv5te-softfloat
           path: ${{ env.ARTIFACT_DIR }}
-
-  bundle:
-    name: 汇总三个变体
-    needs: build
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: all-artifacts
-
-      - name: Upload combined bundle
-        uses: actions/upload-artifact@v7
-        with:
-          name: mtd-utils-arm32-dynamic-bundle
-          path: all-artifacts

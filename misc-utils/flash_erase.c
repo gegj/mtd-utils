@@ -71,9 +71,9 @@ static void display_help (void)
 			"  -q, --quiet             do not display progress messages\n"
 			"      --silent            same as --quiet\n"
 			"      --help              display this help and exit\n"
-			"      --version           output version information and exit\n",
+			"      --version           output version information and exit\n"
 			"\n"
-			"  MTD_DEVICE  MTD device node or 'mtd:<name>'\n"
+			"  MTD_DEVICE  MTD device node or 'mtd:<name>'\n",
 			PROGRAM_NAME);
 }
 
@@ -91,7 +91,7 @@ static void display_version (void)
 			PROGRAM_NAME);
 }
 
-static void clear_marker(libmtd_t mtd_desc, struct mtd_dev_info *mtd, int fd,
+static int clear_marker(libmtd_t mtd_desc, struct mtd_dev_info *mtd, int fd,
 			 unsigned int eb, int cmlen, bool isNAND)
 {
 	off_t offset = (off_t)eb * mtd->eb_size;
@@ -101,15 +101,16 @@ static void clear_marker(libmtd_t mtd_desc, struct mtd_dev_info *mtd, int fd,
 		if (mtd_write(mtd_desc, mtd, fd, eb, 0, NULL, 0, &cleanmarker, cmlen,
 				MTD_OPS_AUTO_OOB) != 0) {
 			sys_errmsg("%s: MTD writeoob failure", mtd_device);
-			return;
+			return -1;
 		}
 	} else {
 		if (pwrite(fd, &cleanmarker, sizeof(cleanmarker), (loff_t)offset) != sizeof(cleanmarker)) {
 			sys_errmsg("%s: MTD write failure", mtd_device);
-			return;
+			return -1;
 		}
 	}
 	verbose(!quiet, "%llx : Cleanmarker Updated.", (unsigned long long)offset);
+	return 0;
 }
 
 int main(int argc, char *argv[])
@@ -275,7 +276,8 @@ int main(int argc, char *argv[])
 
 		/* write cleanmarker */
 		for (eb = eb_start; eb < eb_start + eb_cnt; eb++)
-			clear_marker(mtd_desc, &mtd, fd, eb, cmlen, isNAND);
+			if (clear_marker(mtd_desc, &mtd, fd, eb, cmlen, isNAND))
+				error = 1;
 		goto out;
 	}
 
@@ -303,21 +305,25 @@ erase_each_sector:
 		if (unlock) {
 			if (mtd_unlock(&mtd, fd, eb) != 0) {
 				sys_errmsg("%s: MTD unlock failure", mtd_device);
+				error = 1;
 				continue;
 			}
 		}
 
 		if (mtd_erase(mtd_desc, &mtd, fd, eb) != 0) {
 			sys_errmsg("%s: MTD Erase failure", mtd_device);
+			error = 1;
 			continue;
 		}
 
-		if (jffs2)
-			clear_marker(mtd_desc, &mtd, fd, eb, cmlen, isNAND);
+		if (jffs2 && clear_marker(mtd_desc, &mtd, fd, eb, cmlen, isNAND))
+			error = 1;
 	}
 	show_progress(offset, eb, eb_start, eb_cnt, mtd.eb_size);
 out:
 	bareverbose(!quiet, "\n");
 
-	return 0;
+	close(fd);
+	libmtd_close(mtd_desc);
+	return error ? EXIT_FAILURE : EXIT_SUCCESS;
 }

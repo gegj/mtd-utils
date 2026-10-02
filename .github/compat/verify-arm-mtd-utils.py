@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""验证交叉编译出来的 nandwrite / flash_erase 能不能在目标设备上加载运行。
+"""检查 nandwrite / flash_erase 的静态 ELF 和动态符号兼容基线。
 
 背景：这类设备（ZTE/高通 MDM 随身 WiFi 等）的 /tmp 很小，不能静态链接（静态要 ~1MB，
 动态只要 35~45KB），所以产物必须"动态 + 只依赖设备上真实存在的 libc"。历史上踩过的坑：
@@ -25,6 +25,7 @@
 """
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -81,18 +82,34 @@ def parse_glibc_versions(readelf_dyn_syms):
 # ---------------------------------------------------------------- 实际读取
 
 def run_readelf(args, path):
-    completed = subprocess.run(["readelf"] + args + [path], capture_output=True, text=True)
+    env = dict(os.environ, LC_ALL="C")
+    completed = subprocess.run(["readelf"] + args + [path], capture_output=True, text=True, env=env)
     if completed.returncode != 0:
         raise RuntimeError("readelf %s %s 失败：%s" % (" ".join(args), path, completed.stderr.strip()))
     return completed.stdout
 
 
-def check_elf_header(path, problems):
-    header = run_readelf(["-h"], path)
+def check_arm_abi(header, attributes, problems):
     if not re.search(r"Class:\s+ELF32", header):
         problems.append("不是 ELF32（可能编成了别的架构）")
     if not re.search(r"Machine:\s+ARM", header):
         problems.append("Machine 不是 ARM")
+    if not re.search(r"Data:.*little endian", header):
+        problems.append("Expected little-endian ELF")
+    if not re.search(r"Flags:.*Version5 EABI", header):
+        problems.append("Expected EABI5")
+    if "hard-float ABI" in header:
+        problems.append("Hard-float ELF is incompatible with soft-float baseline")
+    if not re.search(r"Tag_CPU_arch:\s+v5TE\s*$", attributes, re.MULTILINE):
+        problems.append("Expected ARMv5TE CPU attributes")
+    if re.search(r"Tag_ABI_VFP_args:\s+VFP registers", attributes):
+        problems.append("VFP register argument ABI is forbidden")
+    if re.search(r"Tag_(?:FP_arch|Advanced_SIMD_arch):", attributes):
+        problems.append("Hardware floating-point/SIMD instructions are forbidden")
+
+
+def check_elf_header(path, problems):
+    check_arm_abi(run_readelf(["-h"], path), run_readelf(["-A"], path), problems)
 
 
 def load_allowed_symbols(path):
@@ -102,9 +119,9 @@ def load_allowed_symbols(path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--binaries", nargs="+", required=True)
-    parser.add_argument("--interp-re", required=True, help="期望的 PT_INTERP 正则")
-    parser.add_argument("--needed-re", required=True, help="每条 DT_NEEDED 都必须匹配的正则")
+    parser.add_argument("--binaries", nargs="+")
+    parser.add_argument("--interp-re", help="期望的 PT_INTERP 正则")
+    parser.add_argument("--needed-re", help="每条 DT_NEEDED 都必须匹配的正则")
     parser.add_argument("--max-size", type=int, default=204800, help="体积上限（字节），防止误编成静态")
     parser.add_argument("--symbol-gate", help="目标设备 libc 的导出符号清单文件（每行一个）")
     parser.add_argument("--forbid-symbols", nargs="*", default=[], help="禁止出现的未定义符号")
@@ -113,6 +130,8 @@ def main():
 
     if args.self_test:
         return self_test()
+    if not args.binaries or not args.interp_re or not args.needed_re:
+        parser.error("--binaries, --interp-re and --needed-re are required unless --self-test")
 
     allowed = None
     if args.symbol_gate:
@@ -179,7 +198,7 @@ def main():
             for problem in problems:
                 print("  [失败] %s" % problem)
         else:
-            print("  [通过] 可以在目标设备上加载运行")
+            print("  [通过] 静态兼容检查通过；动态加载和 MTD 操作仍需设备验证")
 
     if failed:
         print("\n兼容性门禁未通过，按上面的 [失败] 项逐条处理：")
@@ -253,6 +272,24 @@ def self_test():
     expect("__register_frame_info 绑定", undefined.get("__register_frame_info"), "WEAK")
     expect("已定义符号不进集合", "stdout" in undefined, False)
     expect("glibc 版本解析", parse_glibc_versions(SAMPLE_DYN_SYMS), {(2, 1, 3), (2, 34)})
+
+    header = SAMPLE_HEADER + "  Flags: 0x5000200, Version5 EABI, soft-float ABI\n"
+    attributes = "  Tag_CPU_arch: v5TE\n"
+    problems = []
+    check_arm_abi(header, attributes, problems)
+    expect("ARM baseline", problems, [])
+    for label, bad_header, bad_attributes in [
+        ("big endian", header.replace("little endian", "big endian"), attributes),
+        ("hard float", header.replace("soft-float ABI", "hard-float ABI"), attributes),
+        ("new CPU", header, attributes.replace("v5TE", "v7")),
+        ("missing attributes", header, ""),
+        ("VFP arguments", header, attributes + "Tag_ABI_VFP_args: VFP registers\n"),
+        ("FP instructions", header, attributes + "Tag_FP_arch: VFPv3\n"),
+        ("old EABI", header.replace("Version5 EABI", "Version4 EABI"), attributes),
+    ]:
+        problems = []
+        check_arm_abi(bad_header, bad_attributes, problems)
+        expect(label, bool(problems), True)
 
     if failures:
         for failure in failures:
