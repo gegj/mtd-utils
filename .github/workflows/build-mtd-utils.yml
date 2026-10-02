@@ -171,8 +171,13 @@ jobs:
             test -n "$file" && test -f "$file"
             cp "$file" "$ARTIFACT_DIR/$name"
           done
-          "${{ steps.tc.outputs.prefix }}-strip" --strip-unneeded \
+          "${{ steps.tc.outputs.prefix }}-strip" --strip-unneeded --keep-section=.ARM.attributes \
             "$ARTIFACT_DIR/flash_erase" "$ARTIFACT_DIR/nandwrite"
+          for name in flash_erase nandwrite; do
+            echo "ARM attributes before and after strip: $name"
+            "${{ steps.tc.outputs.prefix }}-readelf" -A "$name"
+            "${{ steps.tc.outputs.prefix }}-readelf" -A "$ARTIFACT_DIR/$name"
+          done
           ls -l "$ARTIFACT_DIR"
 
       - name: Compatibility gate

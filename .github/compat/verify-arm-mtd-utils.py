@@ -100,8 +100,10 @@ def check_arm_abi(header, attributes, problems):
         problems.append("Expected EABI5")
     if "hard-float ABI" in header:
         problems.append("Hard-float ELF is incompatible with soft-float baseline")
-    if not re.search(r"Tag_CPU_arch:\s+v5TE\s*$", attributes, re.MULTILINE):
-        problems.append("Expected ARMv5TE CPU attributes")
+    cpu_arches = re.findall(r"Tag_CPU_arch:\s*([^\r\n]+)", attributes)
+    if not cpu_arches or any(arch.strip() != "v5TE" for arch in cpu_arches):
+        problems.append("Expected ARMv5TE CPU attributes; actual: %s" %
+                        (", ".join(cpu_arches) or "missing Tag_CPU_arch"))
     if re.search(r"Tag_ABI_VFP_args:\s+VFP registers", attributes):
         problems.append("VFP register argument ABI is forbidden")
     if re.search(r"Tag_(?:FP_arch|Advanced_SIMD_arch):", attributes):
@@ -109,7 +111,12 @@ def check_arm_abi(header, attributes, problems):
 
 
 def check_elf_header(path, problems):
-    check_arm_abi(run_readelf(["-h"], path), run_readelf(["-A"], path), problems)
+    header = run_readelf(["-h"], path)
+    attributes = run_readelf(["-A"], path)
+    check_arm_abi(header, attributes, problems)
+    if problems:
+        print("ELF ABI diagnostics for %s:\n%s\n%s" %
+              (path, header, attributes or "(no ARM attributes)"))
 
 
 def load_allowed_symbols(path):
@@ -283,6 +290,7 @@ def self_test():
         ("hard float", header.replace("soft-float ABI", "hard-float ABI"), attributes),
         ("new CPU", header, attributes.replace("v5TE", "v7")),
         ("missing attributes", header, ""),
+        ("mixed CPU attributes", header, attributes + "  Tag_CPU_arch: v7\n"),
         ("VFP arguments", header, attributes + "Tag_ABI_VFP_args: VFP registers\n"),
         ("FP instructions", header, attributes + "Tag_FP_arch: VFPv3\n"),
         ("old EABI", header.replace("Version5 EABI", "Version4 EABI"), attributes),
