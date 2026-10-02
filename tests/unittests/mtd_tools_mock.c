@@ -1,5 +1,6 @@
 /* File-backed MTD test double. Only linked into regression executables. */
 #include <errno.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
