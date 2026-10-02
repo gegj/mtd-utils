@@ -187,7 +187,8 @@ jobs:
                 --interp-re '^/lib/ld-uClibc\.so\.0$'
                 --needed-re '^libc\.so\.0$'
                 --max-size 204800)
-          args+=(--symbol-gate "$COMPAT_DIR/uclibc-0.9.33.2-dynsyms.txt"
+          args+=(--objdump "${{ steps.tc.outputs.prefix }}-objdump"
+                 --symbol-gate "$COMPAT_DIR/uclibc-0.9.33.2-dynsyms.txt"
                  --forbid-symbols gnu_dev_major gnu_dev_minor __stack_chk_guard)
           python3 "$COMPAT_DIR/verify-arm-mtd-utils.py" "${args[@]}" | tee "$ARTIFACT_DIR/STATIC-VERIFICATION.txt"
 

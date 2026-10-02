@@ -21,7 +21,7 @@
 
 `verify-arm-mtd-utils.py` 在每个变体编译完成后运行，检查：
 
-1. ELF32 / ARM、小端、EABI5、ARMv5TE attributes；拒绝 hard-float、VFP 参数及 FP/SIMD 指令集属性；
+1. ELF32 / ARM、小端、EABI5、ARMv5TE attributes；v5TEJ 仅在 ARM 反汇编中未发现 BXJ 编码时放行；拒绝 hard-float、VFP 参数及 FP/SIMD 指令集属性；
 2. `PT_INTERP` 匹配目标设备 loader（uClibc 变体必须是 `/lib/ld-uClibc.so.0`）；
 3. 每条 `DT_NEEDED` 都匹配期望的 libc（uClibc 变体绝不允许出现 `ld-uClibc.so.1`）；
 4. 体积 < 200KB（一旦误编成静态会大一个数量级，立刻失败）；
@@ -52,6 +52,7 @@ export LDFLAGS="-Wl,--gc-sections -Wl,--dynamic-linker=/lib/ld-uClibc.so.0 -L$PW
 make -j"$(nproc)" flash_erase nandwrite
 python3 .github/compat/verify-arm-mtd-utils.py \
   --binaries flash_erase nandwrite \
+  --objdump arm-buildroot-linux-uclibcgnueabi-objdump \
   --interp-re '^/lib/ld-uClibc\.so\.0$' --needed-re '^libc\.so\.0$' \
   --symbol-gate .github/compat/uclibc-0.9.33.2-dynsyms.txt \
   --forbid-symbols gnu_dev_major gnu_dev_minor __stack_chk_guard

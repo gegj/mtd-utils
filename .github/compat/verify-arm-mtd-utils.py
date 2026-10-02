@@ -89,7 +89,21 @@ def run_readelf(args, path):
     return completed.stdout
 
 
-def check_arm_abi(header, attributes, problems):
+def check_jazelle(disassembly, problems):
+    if not disassembly or not re.search(
+            r"^\s*[0-9a-f]+:\s+(?:[0-9a-f]{8}|[0-9a-f]{4})\s+",
+            disassembly, re.MULTILINE | re.IGNORECASE):
+        problems.append("ARMv5TEJ requires nonempty ARM disassembly to exclude BXJ")
+        return
+    # BXJ uses bits 27:4 == 0x12fff2; include conditional encodings and
+    # words printed as data so stripped/mapping-symbol differences fail safe.
+    words = re.findall(r"^\s*[0-9a-f]+:\s+([0-9a-f]{8})\s+",
+                       disassembly, re.MULTILINE | re.IGNORECASE)
+    if any(int(word, 16) & 0x0ffffff0 == 0x012fff20 for word in words):
+        problems.append("BXJ instruction requires Jazelle; ARMv5TE baseline rejected")
+
+
+def check_arm_abi(header, attributes, problems, disassembly=None):
     if not re.search(r"Class:\s+ELF32", header):
         problems.append("不是 ELF32（可能编成了别的架构）")
     if not re.search(r"Machine:\s+ARM", header):
@@ -101,19 +115,29 @@ def check_arm_abi(header, attributes, problems):
     if "hard-float ABI" in header:
         problems.append("Hard-float ELF is incompatible with soft-float baseline")
     cpu_arches = re.findall(r"Tag_CPU_arch:\s*([^\r\n]+)", attributes)
-    if not cpu_arches or any(arch.strip() != "v5TE" for arch in cpu_arches):
+    if not cpu_arches or any(arch.strip() not in ("v5TE", "v5TEJ") for arch in cpu_arches):
         problems.append("Expected ARMv5TE CPU attributes; actual: %s" %
                         (", ".join(cpu_arches) or "missing Tag_CPU_arch"))
+    if any(arch.strip() == "v5TEJ" for arch in cpu_arches):
+        check_jazelle(disassembly, problems)
     if re.search(r"Tag_ABI_VFP_args:\s+VFP registers", attributes):
         problems.append("VFP register argument ABI is forbidden")
     if re.search(r"Tag_(?:FP_arch|Advanced_SIMD_arch):", attributes):
         problems.append("Hardware floating-point/SIMD instructions are forbidden")
 
 
-def check_elf_header(path, problems):
+def check_elf_header(path, problems, objdump):
     header = run_readelf(["-h"], path)
     attributes = run_readelf(["-A"], path)
-    check_arm_abi(header, attributes, problems)
+    disassembly = None
+    if re.search(r"Tag_CPU_arch:\s*v5TEJ\s*$", attributes, re.MULTILINE):
+        completed = subprocess.run([objdump, "-d", path], capture_output=True,
+                                   text=True, env=dict(os.environ, LC_ALL="C"))
+        if completed.returncode:
+            problems.append("ARM objdump failed: " + completed.stderr.strip())
+        else:
+            disassembly = completed.stdout
+    check_arm_abi(header, attributes, problems, disassembly)
     if problems:
         print("ELF ABI diagnostics for %s:\n%s\n%s" %
               (path, header, attributes or "(no ARM attributes)"))
@@ -131,6 +155,7 @@ def main():
     parser.add_argument("--needed-re", help="每条 DT_NEEDED 都必须匹配的正则")
     parser.add_argument("--max-size", type=int, default=204800, help="体积上限（字节），防止误编成静态")
     parser.add_argument("--symbol-gate", help="目标设备 libc 的导出符号清单文件（每行一个）")
+    parser.add_argument("--objdump", default="objdump", help="ARM-capable objdump executable")
     parser.add_argument("--forbid-symbols", nargs="*", default=[], help="禁止出现的未定义符号")
     parser.add_argument("--self-test", action="store_true", help="只跑解析函数的自测，不读 ELF")
     args = parser.parse_args()
@@ -150,7 +175,7 @@ def main():
         problems = []
         with open(path, "rb") as handle:
             size = len(handle.read())
-        check_elf_header(path, problems)
+        check_elf_header(path, problems, args.objdump)
 
         interp = parse_interp(run_readelf(["-l"], path))
         if not interp:
@@ -285,6 +310,18 @@ def self_test():
     problems = []
     check_arm_abi(header, attributes, problems)
     expect("ARM baseline", problems, [])
+    jazelle_attributes = attributes.replace("v5TE", "v5TEJ")
+    for label, disassembly, should_fail in [
+        ("v5TEJ without BXJ", "  100: e12fff1e bx lr\n", False),
+        ("v5TEJ with BXJ", "  100: e12fff20 bxj r0\n", True),
+        ("conditional BXJ", "  100: 112fff23 bxjne r3\n", True),
+        ("BXJ data encoding", "  100: e12fff20 .word 0xe12fff20\n", True),
+        ("missing disassembly", None, True),
+        ("empty disassembly", "", True),
+    ]:
+        problems = []
+        check_arm_abi(header, jazelle_attributes, problems, disassembly)
+        expect(label, bool(problems), should_fail)
     for label, bad_header, bad_attributes in [
         ("big endian", header.replace("little endian", "big endian"), attributes),
         ("hard float", header.replace("soft-float ABI", "hard-float ABI"), attributes),
