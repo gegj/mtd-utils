@@ -1,9 +1,22 @@
-name: Build ARM32 uClibc mtd-utils
+name: Build ARM32 mtd-utils (nandwrite + flash_erase)
+
+# 提交到 master / 发起 PR / 手动触发都会编译，产物是三个"动态、小体积"的变体：
+#   uclibc -> 经典 uClibc 0.9.33.x 设备（随身 WiFi 常见）与 uClibc-ng 设备
+#   musl   -> OpenWrt/musl 一类设备
+#   glibc  -> glibc 设备
+# 每个变体只有 35~45KB（不能静态链接：部分设备 /tmp 空间极小，静态要 ~1MB）。
+#
+# uClibc 变体做了三个必需的兼容处理（详见 .github/compat/README.md）：
+#   1) -fno-stack-protector                 去掉 __stack_chk_guard 引用
+#   2) -I .github/compat (sysmacros shim)   去掉 gnu_dev_major/minor 引用
+#   3) 自建 libc.so 链接脚本只链共享 libc.so.0，避免 NEEDED 里出现 ld-uClibc.so.1
+# 编译完成后由 .github/compat/verify-arm-mtd-utils.py 做兼容性门禁，不通过就失败。
 
 on:
   push:
     branches:
       - master
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -15,66 +28,137 @@ concurrency:
 
 jobs:
   build:
-    name: ARMv5 EABI uClibc mtd-utils ${{ matrix.version }}
+    name: ${{ matrix.libc }} / ${{ matrix.arch }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        version:
-          - 2.3.1
-          - 1.5.2
-        repository:
-          - lgirdk/mtd-utils
+        include:
+          - libc: uclibc
+            arch: armv5te-softfloat
+            archive: armv5-eabi--uclibc--stable-2026.08-1.tar.xz
+            sha256: 2e78440c4b37a9c84d6165f12fd2525e72bf88c32445e1c3400d1e01384c92ce
+            dynamic_linker: /lib/ld-uClibc.so.0
+            interp_re: '^/lib/ld-uClibc\.so\.0$'
+            needed_re: '^libc\.so\.0$'
+            uclibc_compat: true
+          - libc: musl
+            arch: armv5te-softfloat
+            archive: armv5-eabi--musl--stable-2026.08-1.tar.xz
+            sha256: ''
+            dynamic_linker: ''
+            interp_re: '^/lib/ld-musl-.*\.so\.1$'
+            needed_re: '^libc\.so$'
+            uclibc_compat: false
+          - libc: glibc
+            arch: armv5te-softfloat
+            archive: armv5-eabi--glibc--stable-2026.08-1.tar.xz
+            sha256: ''
+            dynamic_linker: ''
+            interp_re: '^/lib/ld-linux.*\.so\.[0-9]+$'
+            needed_re: '^libc\.so\.6$'
+            uclibc_compat: false
+
     env:
-      TOOLCHAIN_VERSION: stable-2026.08-1
-      TOOLCHAIN_ARCHIVE: armv5-eabi--uclibc--stable-2026.08-1.tar.xz
-      TOOLCHAIN_SHA256: 2e78440c4b37a9c84d6165f12fd2525e72bf88c32445e1c3400d1e01384c92ce
-      TOOLCHAIN_PREFIX: arm-buildroot-linux-uclibcgnueabi
+      TOOLCHAIN_DIR: ${{ github.workspace }}/.toolchain
+      COMPAT_DIR: ${{ github.workspace }}/.github/compat
+      COMPAT_LIB_DIR: ${{ github.workspace }}/.compat-lib
+      ARTIFACT_DIR: ${{ github.workspace }}/artifact-arm-${{ matrix.libc }}
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v7
-        with:
-          repository: ${{ matrix.repository }}
-          ref: v${{ matrix.version }}
-          fetch-depth: 0
 
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             autoconf automake build-essential file libtool libtool-bin \
-            pkg-config xz-utils
+            pkg-config python3 xz-utils
 
-      - name: Download and verify ARM uClibc toolchain
+      - name: Restore Bootlin toolchain from cache
+        id: toolchain_cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TOOLCHAIN_DIR }}
+          key: bootlin-armv5-eabi-${{ matrix.archive }}
+
+      - name: Download Bootlin toolchain
+        if: steps.toolchain_cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          archive="$RUNNER_TEMP/$TOOLCHAIN_ARCHIVE"
-          toolchain_dir="$RUNNER_TEMP/arm-uclibc-toolchain"
-          url="https://toolchains.bootlin.com/downloads/releases/toolchains/armv5-eabi/tarballs/$TOOLCHAIN_ARCHIVE"
+          url="https://toolchains.bootlin.com/downloads/releases/toolchains/armv5-eabi/tarballs/${{ matrix.archive }}"
+          curl --fail --location --retry 3 --retry-delay 2 "$url" --output "$RUNNER_TEMP/toolchain.tar.xz"
+          if [ -n "${{ matrix.sha256 }}" ]; then
+            printf '%s  %s\n' "${{ matrix.sha256 }}" "$RUNNER_TEMP/toolchain.tar.xz" | sha256sum --check -
+          else
+            echo "::warning::matrix.sha256 为空，未校验工具链哈希（可从 .../tarballs/${{ matrix.archive }}.sha256 取到后填上）"
+          fi
+          rm -rf "$TOOLCHAIN_DIR"
+          mkdir -p "$TOOLCHAIN_DIR"
+          tar -xJf "$RUNNER_TEMP/toolchain.tar.xz" -C "$TOOLCHAIN_DIR" --strip-components=1
+          rm -f "$RUNNER_TEMP/toolchain.tar.xz"
 
-          curl --fail --location --retry 3 --retry-delay 2 "$url" --output "$archive"
-          printf '%s  %s\n' "$TOOLCHAIN_SHA256" "$archive" | sha256sum --check -
-          mkdir -p "$toolchain_dir"
-          tar -xJf "$archive" -C "$toolchain_dir" --strip-components=1
-
-          test -x "$toolchain_dir/bin/$TOOLCHAIN_PREFIX-gcc"
-          test -x "$toolchain_dir/bin/$TOOLCHAIN_PREFIX-strip"
-          test -e "$toolchain_dir/$TOOLCHAIN_PREFIX/sysroot/lib/ld-uClibc.so.0"
-          echo "$toolchain_dir/bin" >> "$GITHUB_PATH"
-
-      - name: Configure and build flash_erase and nandwrite
-        env:
-          CC: arm-buildroot-linux-uclibcgnueabi-gcc
-          AR: arm-buildroot-linux-uclibcgnueabi-ar
-          RANLIB: arm-buildroot-linux-uclibcgnueabi-ranlib
-          CFLAGS: -Os -marm -march=armv5te -mfloat-abi=soft -ffunction-sections -fdata-sections
-          LDFLAGS: -Wl,--gc-sections -Wl,--dynamic-linker=/lib/ld-uClibc.so.0
+      - name: Detect cross toolchain prefix
+        id: tc
         run: |
           set -euo pipefail
-          ./autogen.sh 2>&1 | tee "$RUNNER_TEMP/mtd-utils-build-${{ matrix.version }}.log"
+          prefix="$(basename "$(ls "$TOOLCHAIN_DIR"/bin/*-gcc | head -1)" -gcc)"
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+          echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
+          "$TOOLCHAIN_DIR/bin/$prefix-gcc" -dumpmachine
+          echo "release=$(grep -oP 'm4_define\(\[RELEASE\], \K[0-9.]+' configure.ac)" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare uClibc compatibility layer
+        if: matrix.uclibc_compat
+        run: |
+          set -euo pipefail
+          # 让 -lc 解析到我们自己的脚本：只链共享 libc.so.0。
+          # uClibc-ng 的 libc.so 链接脚本带 AS_NEEDED(ld-uClibc.so.1)，
+          # 会让产物的 NEEDED 里多出 ld-uClibc.so.1，而设备上只有 ld-uClibc.so.0。
+          sysroot="$("$TOOLCHAIN_DIR/bin/${{ steps.tc.outputs.prefix }}-gcc" -print-sysroot)"
+          rm -rf "$COMPAT_LIB_DIR"
+          mkdir -p "$COMPAT_LIB_DIR"
+          printf 'INPUT ( %s/lib/libc.so.0 )\n' "$sysroot" > "$COMPAT_LIB_DIR/libc.so"
+          echo "自建链接脚本：$(cat "$COMPAT_LIB_DIR/libc.so")"
+          ls -l "$sysroot/lib/libc.so.0"
+          echo "sysmacros shim：$COMPAT_DIR/sys/sysmacros.h"
+          head -5 "$COMPAT_DIR/sys/sysmacros.h"
+
+      - name: Export cross build flags
+        run: |
+          set -euo pipefail
+          cflags="-Os -marm -march=armv5te -mfloat-abi=soft -ffunction-sections -fdata-sections"
+          cppflags=""
+          ldflags="-Wl,--gc-sections"
+          if [ -n "${{ matrix.dynamic_linker }}" ]; then
+            ldflags="$ldflags -Wl,--dynamic-linker=${{ matrix.dynamic_linker }}"
+          fi
+          if [ "${{ matrix.uclibc_compat }}" = "true" ]; then
+            cflags="$cflags -fno-stack-protector"
+            cppflags="-I$COMPAT_DIR"
+            ldflags="$ldflags -L$COMPAT_LIB_DIR"
+          fi
+          {
+            echo "CC=${{ steps.tc.outputs.prefix }}-gcc"
+            echo "AR=${{ steps.tc.outputs.prefix }}-ar"
+            echo "RANLIB=${{ steps.tc.outputs.prefix }}-ranlib"
+            echo "CFLAGS=$cflags"
+            echo "CPPFLAGS=$cppflags"
+            echo "LDFLAGS=$ldflags"
+          } >> "$GITHUB_ENV"
+          echo "CFLAGS  = $cflags"
+          echo "CPPFLAGS= $cppflags"
+          echo "LDFLAGS = $ldflags"
+
+      - name: Configure and build nandwrite + flash_erase
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/build-${{ matrix.libc }}.log"
+          ./autogen.sh 2>&1 | tee "$log"
           ./configure \
-            --host="$TOOLCHAIN_PREFIX" \
+            --host="${{ steps.tc.outputs.prefix }}" \
             --build="$(gcc -dumpmachine)" \
             --without-tests \
             --disable-ubihealthd \
@@ -86,42 +170,95 @@ jobs:
             --without-lzo \
             --without-zstd \
             --without-selinux \
-            --without-crypto 2>&1 | tee -a "$RUNNER_TEMP/mtd-utils-build-${{ matrix.version }}.log"
-          make -j"$(nproc)" flash_erase nandwrite 2>&1 \
-            | tee -a "$RUNNER_TEMP/mtd-utils-build-${{ matrix.version }}.log"
+            --without-crypto 2>&1 | tee -a "$log"
+          # 顶层 Makefile.am 是非递归构建（include */Makemodule.am），产物就在仓库根目录
+          make -j"$(nproc)" flash_erase nandwrite 2>&1 | tee -a "$log"
 
-      - name: Strip and verify ARM binaries
+      - name: Collect and strip binaries
         run: |
           set -euo pipefail
-          mkdir -p artifact-arm-uclibc
-          cp flash_erase nandwrite artifact-arm-uclibc/
-          "${TOOLCHAIN_PREFIX}-strip" --strip-unneeded \
-            artifact-arm-uclibc/flash_erase \
-            artifact-arm-uclibc/nandwrite
-
-          for binary in artifact-arm-uclibc/flash_erase artifact-arm-uclibc/nandwrite; do
-            "${TOOLCHAIN_PREFIX}-readelf" -h "$binary" | grep -Eq 'Class:[[:space:]]+ELF32'
-            "${TOOLCHAIN_PREFIX}-readelf" -h "$binary" | grep -Eq 'Machine:[[:space:]]+ARM'
-            "${TOOLCHAIN_PREFIX}-readelf" -l "$binary" \
-              | grep -Fq 'Requesting program interpreter: /lib/ld-uClibc.so.0'
+          mkdir -p "$ARTIFACT_DIR"
+          for name in flash_erase nandwrite; do
+            file="$name"
+            if [ ! -f "$file" ]; then
+              file="$(find . -maxdepth 3 -type f -name "$name" -print -quit)"
+            fi
+            test -n "$file" && test -f "$file"
+            cp "$file" "$ARTIFACT_DIR/$name"
           done
+          "${{ steps.tc.outputs.prefix }}-strip" --strip-unneeded \
+            "$ARTIFACT_DIR/flash_erase" "$ARTIFACT_DIR/nandwrite"
+          ls -l "$ARTIFACT_DIR"
 
-          file artifact-arm-uclibc/flash_erase artifact-arm-uclibc/nandwrite
-          printf 'mtd-utils=%s\ntoolchain=Bootlin %s\ntarget=%s\nlibc=uClibc\narch=ARMv5 EABI soft-float\ninterpreter=/lib/ld-uClibc.so.0\n' \
-            "${{ matrix.version }}" "$TOOLCHAIN_VERSION" "$TOOLCHAIN_PREFIX" > artifact-arm-uclibc/BUILD-INFO.txt
-          sha256sum artifact-arm-uclibc/flash_erase artifact-arm-uclibc/nandwrite \
-            | tee artifact-arm-uclibc/SHA256SUMS
+      - name: Compatibility gate
+        run: |
+          set -euo pipefail
+          args=(--binaries "$ARTIFACT_DIR/flash_erase" "$ARTIFACT_DIR/nandwrite"
+                --interp-re '${{ matrix.interp_re }}'
+                --needed-re '${{ matrix.needed_re }}'
+                --max-size 204800)
+          if [ "${{ matrix.uclibc_compat }}" = "true" ]; then
+            args+=(--symbol-gate "$COMPAT_DIR/uclibc-0.9.33.2-dynsyms.txt"
+                   --forbid-symbols gnu_dev_major gnu_dev_minor __stack_chk_guard)
+          fi
+          python3 "$COMPAT_DIR/verify-arm-mtd-utils.py" "${args[@]}"
+
+      - name: Write BUILD-INFO / SHA256SUMS / 选型说明
+        run: |
+          set -euo pipefail
+          cat > "$ARTIFACT_DIR/BUILD-INFO.txt" <<EOF
+          mtd-utils=${{ steps.tc.outputs.release }}
+          source=${{ github.repository }}@${{ github.sha }}
+          toolchain=Bootlin ${{ matrix.archive }}
+          target=${{ steps.tc.outputs.prefix }}
+          libc=${{ matrix.libc }}
+          arch=${{ matrix.arch }}
+          dynamic_linker=${{ matrix.dynamic_linker }}
+          uclibc_compat=${{ matrix.uclibc_compat }}
+          build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          EOF
+          ( cd "$ARTIFACT_DIR" && sha256sum flash_erase nandwrite | tee SHA256SUMS )
+          cat > "$ARTIFACT_DIR/HOW-TO-PICK.txt" <<'EOF'
+          设备上怎么挑这一份（先看设备 /lib 里有哪些 loader）：
+
+            /lib/ld-uClibc.so.0       -> 用 uclibc 变体（经典 uClibc 0.9.33.x 与 uClibc-ng 都适用）
+            /lib/ld-musl-*.so.1       -> 用 musl 变体
+            /lib/ld-linux*.so.*       -> 用 glibc 变体
+
+          其它提示：
+            - 三个变体都是 armv5te + soft-float，可向下兼容跑在 armv6/armv7 设备上；
+            - 推送后先跑 `/tmp/nandwrite -V`，能打印 `nandwrite (mtd-utils) <版本>` 才算可用
+              （uClibc 的 loader 在加载失败时可能仍然返回退出码 0，不能只看退出码）；
+            - 设备没有 dd 时回读校验要用 `head -c`，WiFitool 0.73.7 起会自动探测。
+          EOF
+          cat "$ARTIFACT_DIR/BUILD-INFO.txt"
 
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: mtd-utils-${{ matrix.version }}-arm-uclibc-build-log
-          path: ${{ runner.temp }}/mtd-utils-build-${{ matrix.version }}.log
+          name: mtd-utils-${{ matrix.libc }}-build-log
+          path: ${{ runner.temp }}/build-${{ matrix.libc }}.log
           if-no-files-found: ignore
 
-      - name: Upload ARM uClibc binaries
+      - name: Upload binaries
         uses: actions/upload-artifact@v7
         with:
-          name: mtd-utils-${{ matrix.version }}-arm32-uclibc-armv5te
-          path: artifact-arm-uclibc
+          name: mtd-utils-${{ steps.tc.outputs.release }}-arm32-${{ matrix.libc }}-${{ matrix.arch }}
+          path: ${{ env.ARTIFACT_DIR }}
+
+  bundle:
+    name: 汇总三个变体
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+
+      - name: Upload combined bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: mtd-utils-arm32-dynamic-bundle
+          path: all-artifacts
