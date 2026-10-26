@@ -1,0 +1,130 @@
+name: Build ARMv7 uClibc binaries
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Check out mtd-utils
+        uses: actions/checkout@v4
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            autoconf automake bc bison build-essential cpio file flex gettext \
+            libncurses-dev libtool pkg-config python-is-python3 python3 rsync unzip wget
+
+      - name: Fetch Buildroot
+        run: git clone --depth 1 --branch 2015.08.1 https://github.com/buildroot/buildroot.git buildroot
+
+      - name: Restore Buildroot toolchain cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            buildroot/dl
+            buildroot/output
+          key: buildroot-2015.08.1-${{ runner.os }}-${{ hashFiles('ci/buildroot-armv7.config') }}
+
+      - name: Build ARMv7 soft-float uClibc toolchain
+        run: |
+          cp ci/buildroot-armv7.config buildroot/.config
+          make -C buildroot olddefconfig
+
+          grep -Fx 'BR2_arm=y' buildroot/.config
+          grep -Fx 'BR2_cortex_a7=y' buildroot/.config
+          grep -Fx 'BR2_ARM_EABI=y' buildroot/.config
+          grep -Fx 'BR2_ARM_SOFT_FLOAT=y' buildroot/.config
+          grep -Fx 'BR2_UCLIBC_VERSION_STRING="0.9.33.2"' buildroot/.config
+          grep -Fx 'BR2_GCC_VERSION="4.9.3"' buildroot/.config
+          grep -Fx 'BR2_DEFAULT_KERNEL_HEADERS="3.4.108"' buildroot/.config
+          grep -Fx 'BR2_SHARED_LIBS=y' buildroot/.config
+
+          make -C buildroot -j"$(nproc)" toolchain
+
+      - name: Configure and build flash_erase and nandwrite
+        shell: bash
+        run: |
+          toolchain_bin="$GITHUB_WORKSPACE/buildroot/output/host/usr/bin"
+          compiler="$(find -L "$toolchain_bin" -maxdepth 1 -type f -name 'arm*-gcc' -print -quit)"
+          test -n "$compiler"
+          target="$(basename "$compiler" -gcc)"
+          export PATH="$toolchain_bin:$PATH"
+
+          ./autogen.sh
+          ./configure \
+            --build="$(gcc -dumpmachine)" \
+            --host="$target" \
+            --without-tests \
+            --without-zlib \
+            --without-xattr \
+            --without-lzo \
+            --without-zstd \
+            --without-selinux \
+            --without-crypto \
+            --without-ubifs \
+            --without-jffs \
+            --without-lsmtd
+          make -j"$(nproc)" flash_erase nandwrite
+
+      - name: Verify ARM ELF and runtime dependencies
+        shell: bash
+        run: |
+          toolchain_bin="$GITHUB_WORKSPACE/buildroot/output/host/usr/bin"
+          compiler="$(find -L "$toolchain_bin" -maxdepth 1 -type f -name 'arm*-gcc' -print -quit)"
+          sysroot="$("$compiler" -print-sysroot)"
+
+          test -e "$sysroot/lib/ld-uClibc.so.0"
+          test -e "$sysroot/lib/libc.so.0"
+          readlink -f "$sysroot/lib/libc.so.0"
+
+          for binary in flash_erase nandwrite; do
+            file "$binary" | grep -F 'ELF 32-bit LSB'
+            readelf -h "$binary" | grep -Eq 'Machine:[[:space:]]+ARM'
+            elf_flags="$(readelf -h "$binary" | sed -n 's/.*Flags:[[:space:]]*//p')"
+            printf '%s\n' "$elf_flags" | grep -F 'Version5 EABI'
+            if printf '%s\n' "$elf_flags" | grep -qi 'hard-float ABI'; then
+              echo "$binary unexpectedly uses the hard-float ABI" >&2
+              exit 1
+            fi
+            if readelf -A "$binary" | grep -Fq 'Tag_ABI_VFP_args: VFP registers'; then
+              echo "$binary uses VFP registers for floating-point arguments" >&2
+              exit 1
+            fi
+            readelf -l "$binary" | grep -F '/lib/ld-uClibc.so.0'
+
+            while IFS= read -r library; do
+              test -e "$sysroot/lib/$library" ||
+                test -e "$sysroot/usr/lib/$library" || {
+                  echo "Missing target library in Buildroot sysroot: $library" >&2
+                  exit 1
+                }
+            done < <(readelf -d "$binary" | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p')
+          done
+
+          readelf -d flash_erase | grep 'Shared library:'
+          readelf -d nandwrite | grep 'Shared library:'
+
+      - name: Package binaries
+        run: |
+          mkdir -p dist
+          chmod 0755 flash_erase nandwrite
+          tar -czf dist/mtd-utils-armv7-uclibc.tar.gz flash_erase nandwrite
+          test "$(tar -tzf dist/mtd-utils-armv7-uclibc.tar.gz | sort | paste -sd ' ' -)" = "flash_erase nandwrite"
+          tar -tvzf dist/mtd-utils-armv7-uclibc.tar.gz | awk '$1 ~ /^-rwx/ { count++ } END { if (count != 2) exit 1 }'
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtd-utils-armv7-uclibc
+          path: dist/mtd-utils-armv7-uclibc.tar.gz
+          if-no-files-found: error
+          retention-days: 30
