@@ -26,13 +26,18 @@ jobs:
       - name: Fetch Buildroot
         run: git clone --depth 1 --branch 2015.08.1 https://github.com/buildroot/buildroot.git buildroot
 
+      - name: Patch host m4 for current glibc
+        run: |
+          cp ci/patches/buildroot-m4-glibc-2.34.patch \
+            buildroot/package/m4/0001-host-m4-glibc-2.34.patch
+
       - name: Restore Buildroot toolchain cache
         uses: actions/cache@v4
         with:
           path: |
             buildroot/dl
             buildroot/output
-          key: buildroot-2015.08.1-${{ runner.os }}-${{ hashFiles('ci/buildroot-armv7.config') }}
+          key: buildroot-2015.08.1-${{ runner.os }}-${{ hashFiles('ci/buildroot-armv7.config', 'ci/patches/buildroot-m4-glibc-2.34.patch') }}
 
       - name: Build ARMv7 soft-float uClibc toolchain
         run: |

@@ -163,6 +163,7 @@ test-driver
 # stgit generated dirs
 patches-*
 *.patch
+!ci/patches/buildroot-m4-glibc-2.34.patch
 
 # cscope and ctag files
 cscope.*

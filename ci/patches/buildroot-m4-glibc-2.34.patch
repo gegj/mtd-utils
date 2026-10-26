@@ -1,0 +1,16 @@
+--- a/lib/c-stack.c
++++ b/lib/c-stack.c
+@@ -49,4 +49,13 @@
+ #include <signal.h>
++#if defined __GLIBC__ && defined __GLIBC_PREREQ
++# if __GLIBC_PREREQ (2, 34)
++/* glibc 2.34 made SIGSTKSZ a sysconf-based expression, but m4 1.4.17
++   uses it in a preprocessor expression. Keep a large constant stack size
++   for this host-only build utility.  */
++#  undef SIGSTKSZ
++#  define SIGSTKSZ (64 * 1024)
++# endif
++#endif
+ #if ! HAVE_STACK_T && ! defined stack_t
+ typedef struct sigaltstack stack_t;
+ #endif
