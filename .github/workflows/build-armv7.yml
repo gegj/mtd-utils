@@ -68,8 +68,8 @@ jobs:
           test -n "$compiler"
           target="$(basename "$compiler" -gcc)"
           export PATH="$toolchain_bin:$PATH"
-          # Keep normal optimization while omitting DWARF debug information.
-          export CFLAGS="-O2 -g0"
+          # Optimize for binary size and omit DWARF debug information.
+          export CFLAGS="-Os -g0"
 
           ./autogen.sh
           ./configure \
