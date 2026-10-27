@@ -3,7 +3,7 @@
  =========
 
  This package provides userspace utilities for working with Linux MTD and UBI
- infrastructure, as well as related filesystems (JFFS2, UBIFS).
+ infrastructure, a1s well as related filesystems (JFFS2, UBIFS).
 
  MTD stands for "Memory Technology Devices" and means flash, RAM and similar
  chips, used for solid state storage on embedded devices. Think of e.g. a raw
