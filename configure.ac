@@ -1,6 +1,6 @@
 AC_PREREQ([2.60])
 
-m4_define([RELEASE], 2.3.0)
+m4_define([RELEASE], 2.3.1)
 
 AC_INIT([mtd-utils], [RELEASE], [linux-mtd@lists.infradead.org], mtd-utils)
 
@@ -304,6 +304,7 @@ AC_CONFIG_FILES([tests/fs-tests/fs_help_all.sh
 	tests/fs-tests/fs_run_all.sh
 	tests/fs-tests/stress/fs_stress00.sh
 	tests/fs-tests/stress/fs_stress01.sh
+	tests/jittertest/filename_bounds.sh
 	tests/ubi-tests/runubitests.sh
 	tests/ubi-tests/ubi-stress-test.sh
 	tests/ubifs_tools-tests/lib/common.sh

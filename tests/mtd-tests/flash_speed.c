@@ -190,7 +190,7 @@ static int read_eraseblock(int ebnum)
 {
 	int err = mtd_read(&mtd, fd, ebnum, 0, iobuf, mtd.eb_size);
 	if (err)
-		fprintf(stderr, "Error writing block %d!\n", ebnum);
+		fprintf(stderr, "Error reading block %d!\n", ebnum);
 	return err;
 }
 
@@ -490,7 +490,7 @@ int main(int argc, char **argv)
 	}
 
 	/* Multi-block erase all eraseblocks */
-	if (!skip) {
+	if (flags & DESTRUCTIVE && !skip) {
 		for (k = 1; k < 7; ++k) {
 			blocks = 1 << k;
 			printf("Testing %dx multi-block erase speed\n", blocks);
@@ -518,7 +518,7 @@ int main(int argc, char **argv)
 	/* Write a page and immediately after try to read another page. Report
 	 * the latency difference when performed on different banks (NOR only).
 	 */
-	if (speb >= 0 && mtd.subpage_size == 1) {
+	if (flags & DESTRUCTIVE && speb >= 0 && mtd.subpage_size == 1) {
 		long rww_duration_w, rww_latency_end;
 		long rww_duration_rnw, rww_duration_r_end;
 		bool rww_r_end_first;

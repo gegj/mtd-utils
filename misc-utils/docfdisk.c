@@ -253,8 +253,17 @@ int main(int argc, char **argv)
 	for (i = 0; i < npart; i++) {
 		ip = &(mh->Partitions[i]);
 		ip->firstUnit = cpu_to_le32(block);
-		if (!nblocks[i])
+		if (!nblocks[i]) {
+			if (block >= totblocks) {
+				printf("No space left on device for partition.\n");
+				return 1;
+			}
 			nblocks[i] = totblocks - block;
+		}
+		if (nblocks[i] > totblocks || block > totblocks - nblocks[i]) {
+			printf("Requested partition size exceeds available device space.\n");
+			return 1;
+		}
 		ip->virtualUnits = cpu_to_le32(nblocks[i]);
 		block += nblocks[i];
 		ip->lastUnit = cpu_to_le32(block-1);
