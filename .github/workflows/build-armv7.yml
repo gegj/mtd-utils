@@ -68,6 +68,8 @@ jobs:
           test -n "$compiler"
           target="$(basename "$compiler" -gcc)"
           export PATH="$toolchain_bin:$PATH"
+          # Keep normal optimization while omitting DWARF debug information.
+          export CFLAGS="-O2 -g0"
 
           ./autogen.sh
           ./configure \
@@ -98,6 +100,10 @@ jobs:
 
           for binary in flash_erase nandwrite; do
             file "$binary" | grep -F 'ELF 32-bit LSB'
+            if readelf -S "$binary" | grep -Eq '\.(z?debug_[^[:space:]]+)'; then
+              echo "$binary unexpectedly contains debug sections" >&2
+              exit 1
+            fi
             readelf -h "$binary" | grep -Eq 'Machine:[[:space:]]+ARM'
             elf_flags="$(readelf -h "$binary" | sed -n 's/.*Flags:[[:space:]]*//p')"
             printf '%s\n' "$elf_flags" | grep -F 'Version5 EABI'
