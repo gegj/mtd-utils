@@ -87,6 +87,16 @@ jobs:
             --without-lsmtd
           make -j"$(nproc)" flash_erase nandwrite
 
+      - name: Remove debug sections from target binaries
+        shell: bash
+        run: |
+          toolchain_bin="$GITHUB_WORKSPACE/buildroot/output/host/usr/bin"
+          compiler="$(find -L "$toolchain_bin" -maxdepth 1 -type f -name 'arm*-gcc' -print -quit)"
+          test -n "$compiler"
+          strip="${compiler%-gcc}-strip"
+          test -x "$strip"
+          "$strip" --strip-debug flash_erase nandwrite
+
       - name: Verify ARM ELF and runtime dependencies
         shell: bash
         run: |
