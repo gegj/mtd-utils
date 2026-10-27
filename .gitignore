@@ -48,7 +48,7 @@ rfddump
 rfdformat
 serve_image
 sumtool
-JitterTest
+/JitterTest
 checkfs
 free_space
 fstest_monitor
