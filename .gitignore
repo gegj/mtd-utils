@@ -164,6 +164,7 @@ test-driver
 patches-*
 *.patch
 !ci/patches/buildroot-m4-glibc-2.34.patch
+!ci/patches/buildroot-m4-glibc-2.28-stdio.patch
 
 # cscope and ctag files
 cscope.*
