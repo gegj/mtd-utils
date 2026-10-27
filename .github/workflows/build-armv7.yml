@@ -39,7 +39,7 @@ jobs:
           path: |
             buildroot/dl
             buildroot/output
-          key: buildroot-2015.08.1-${{ runner.os }}-${{ hashFiles('ci/buildroot-armv7.config', 'ci/patches/buildroot-m4-glibc-2.34.patch', 'ci/patches/buildroot-m4-glibc-2.28-stdio.patch') }}
+          key: buildroot-2015.08.1-${{ runner.os }}-${{ hashFiles('ci/buildroot-armv7.config', 'ci/patches/buildroot-m4-glibc-2.34.patch', 'ci/patches/buildroot-m4-glibc-2.28-stdio.patch') }}-host-cxx98
 
       - name: Build ARMv7 soft-float uClibc toolchain
         run: |
@@ -55,7 +55,10 @@ jobs:
           grep -Fx 'BR2_DEFAULT_KERNEL_HEADERS="3.4.108"' buildroot/.config
           grep -Fx 'BR2_SHARED_LIBS=y' buildroot/.config
 
-          make -C buildroot -j"$(nproc)" toolchain
+          # GCC 4.9.x predates C++17, where incrementing bool became invalid.
+          make -C buildroot -j"$(nproc)" \
+            HOST_CXXFLAGS='$(HOST_CFLAGS) -std=gnu++98' \
+            toolchain
 
       - name: Configure and build flash_erase and nandwrite
         shell: bash
