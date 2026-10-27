@@ -87,7 +87,7 @@ jobs:
             --without-lsmtd
           make -j"$(nproc)" flash_erase nandwrite
 
-      - name: Remove debug sections from target binaries
+      - name: Strip non-dynamic symbols from target binaries
         shell: bash
         run: |
           toolchain_bin="$GITHUB_WORKSPACE/buildroot/output/host/usr/bin"
@@ -95,7 +95,8 @@ jobs:
           test -n "$compiler"
           strip="${compiler%-gcc}-strip"
           test -x "$strip"
-          "$strip" --strip-debug flash_erase nandwrite
+          # Drop the static symbol table; keep dynamic symbols needed by the loader.
+          "$strip" --strip-all flash_erase nandwrite
 
       - name: Verify ARM ELF and runtime dependencies
         shell: bash
@@ -110,8 +111,25 @@ jobs:
 
           for binary in flash_erase nandwrite; do
             file "$binary" | grep -F 'ELF 32-bit LSB'
-            if readelf -S "$binary" | grep -Eq '\.(z?debug_[^[:space:]]+)'; then
+            sections="$(readelf -SW "$binary")"
+            if printf '%s\n' "$sections" | grep -Eq '\.(z?debug_[^[:space:]]+)'; then
               echo "$binary unexpectedly contains debug sections" >&2
+              exit 1
+            fi
+            if printf '%s\n' "$sections" | grep -Fq '.symtab '; then
+              echo "$binary unexpectedly contains a static symbol table" >&2
+              exit 1
+            fi
+            if printf '%s\n' "$sections" | grep -Fq '.strtab '; then
+              echo "$binary unexpectedly contains a static string table" >&2
+              exit 1
+            fi
+            if ! printf '%s\n' "$sections" | grep -Fq '.dynsym '; then
+              echo "$binary is missing its dynamic symbol table" >&2
+              exit 1
+            fi
+            if ! printf '%s\n' "$sections" | grep -Fq '.dynstr '; then
+              echo "$binary is missing its dynamic string table" >&2
               exit 1
             fi
             readelf -h "$binary" | grep -Eq 'Machine:[[:space:]]+ARM'
